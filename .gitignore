@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+build/
+*.log
+*.tsbuildinfo
+.DS_Store
+.idea/
+.vscode/
+release/
+coverage/

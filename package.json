@@ -1,0 +1,38 @@
+{
+  "name": "@zixiao-labs/rosetta",
+  "version": "0.1.0",
+  "description": "VS Code extension-host compatibility layer for Logos Editor Workstation Edition.",
+  "license": "MIT",
+  "author": "Zixiao Laboratory",
+  "type": "module",
+  "main": "dist/boot/main.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "homepage": "https://github.com/zixiao-labs/rosetta#readme",
+  "bugs": {
+    "url": "https://github.com/zixiao-labs/rosetta/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zixiao-labs/rosetta.git"
+  },
+  "keywords": [
+    "logos",
+    "vscode",
+    "extension-host",
+    "compatibility"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "bundle": "node scripts/bundle.mjs",
+    "verify": "node scripts/verify.mjs",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist out release"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
