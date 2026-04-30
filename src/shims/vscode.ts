@@ -64,7 +64,7 @@ export function createVscodeShim(opts: ShimOptions) {
       return bridge.callHost("window.showErrorMessage", [message]) as Promise<undefined>;
     },
     createOutputChannel(name: string) {
-      const channelId = ns(name);
+      const channelId = ns(`output.${nextLocalId()}`);
       bridge.callHost("window.createOutputChannel", [channelId, name]).catch(() => undefined);
       return {
         name,
@@ -229,6 +229,37 @@ export function createVscodeShim(opts: ShimOptions) {
     },
   };
 
+  type ConfigInspect = {
+    defaultValue?: unknown;
+    globalValue?: unknown;
+    workspaceValue?: unknown;
+    workspaceFolderValue?: unknown;
+  };
+  type ConfigEntry = { value: unknown; inspect?: ConfigInspect };
+  const configCache = new Map<string, ConfigEntry>();
+  let configWarmInflight: Promise<void> | null = null;
+  const warmConfiguration = (): Promise<void> => {
+    if (configWarmInflight) return configWarmInflight;
+    configWarmInflight = (async () => {
+      try {
+        const snapshot = (await bridge.callHost("workspace.configuration.warm", [])) as
+          | { entries?: Array<{ path: string; value: unknown; inspect?: ConfigInspect }> }
+          | null;
+        configCache.clear();
+        for (const e of snapshot?.entries ?? []) {
+          const entry: ConfigEntry = { value: e.value };
+          if (e.inspect !== undefined) entry.inspect = e.inspect;
+          configCache.set(e.path, entry);
+        }
+      } catch {
+        /* host unavailable; reads fall back to defaultValue */
+      } finally {
+        configWarmInflight = null;
+      }
+    })();
+    return configWarmInflight;
+  };
+
   const workspace = {
     get workspaceFolders() {
       return undefined;
@@ -263,33 +294,33 @@ export function createVscodeShim(opts: ShimOptions) {
     },
     getConfiguration(section?: string, scope?: unknown) {
       const root = section ?? "";
+      const pathFor = (key: string) => (root ? `${root}.${key}` : key);
+      // Kick off (or join) the initial warm. Reads are synchronous against
+      // the cache; if the cache isn't populated yet, get/has/inspect fall
+      // back to defaultValue/false/undefined to honor the sync vscode API.
+      void warmConfiguration();
       return {
         get<T>(key: string, defaultValue?: T): T | undefined {
-          // Synchronous-shaped read backed by the host's synchronous config
-          // cache. Extensions that need true async should call `update` and
-          // re-read; the host pushes invalidations on its own channel.
-          const path = root ? `${root}.${key}` : key;
-          // The bridge call is async; we surface the resolved value via a
-          // stand-in `defaultValue` until the host responds. Returning the
-          // promise would violate the synchronous vscode contract.
-          void bridge
-            .callHost("workspace.configuration.warm", [path, scope ?? null])
-            .catch(() => undefined);
-          return defaultValue;
+          const entry = configCache.get(pathFor(key));
+          if (entry === undefined || entry.value === undefined) return defaultValue;
+          return entry.value as T;
         },
-        async has(key: string): Promise<boolean> {
-          const path = root ? `${root}.${key}` : key;
-          return (await bridge.callHost("workspace.configuration.has", [path, scope ?? null])) as boolean;
+        has(key: string): boolean {
+          return configCache.has(pathFor(key));
+        },
+        inspect(key: string): ConfigInspect | undefined {
+          return configCache.get(pathFor(key))?.inspect;
         },
         async update(key: string, value: unknown, target?: number): Promise<void> {
-          const path = root ? `${root}.${key}` : key;
-          await bridge.callHost("workspace.configuration.update", [path, value, target ?? null, scope ?? null]);
-        },
-        async inspect<T>(key: string) {
-          const path = root ? `${root}.${key}` : key;
-          return (await bridge.callHost("workspace.configuration.inspect", [path, scope ?? null])) as
-            | { defaultValue?: T; globalValue?: T; workspaceValue?: T }
-            | undefined;
+          const path = pathFor(key);
+          const prev = configCache.get(path) ?? {};
+          configCache.set(path, { ...prev, value });
+          await bridge.callHost("workspace.configuration.update", [
+            path,
+            value,
+            target ?? null,
+            scope ?? null,
+          ]);
         },
       };
     },
@@ -374,16 +405,22 @@ export function createVscodeShim(opts: ShimOptions) {
       triggerKind?: number,
     ): Disposable {
       const cb = bridge.registerCallback(`debug.cfg.${type}`, async (args) => {
-        const [verb, payload] = args as [string, unknown];
+        const [verb, ...rest] = args as [string, ...unknown[]];
         switch (verb) {
-          case "provideDebugConfigurations":
-            return (await provider.provideDebugConfigurations?.(payload)) ?? [];
-          case "resolveDebugConfiguration":
-            return (await provider.resolveDebugConfiguration?.(payload, undefined)) ?? null;
-          case "resolveDebugConfigurationWithSubstitutedVariables":
+          case "provideDebugConfigurations": {
+            const [folder, token] = rest as [unknown, unknown];
+            return (await provider.provideDebugConfigurations?.(folder, token)) ?? [];
+          }
+          case "resolveDebugConfiguration": {
+            const [folder, config, token] = rest as [unknown, unknown, unknown];
+            return (await provider.resolveDebugConfiguration?.(folder, config, token)) ?? null;
+          }
+          case "resolveDebugConfigurationWithSubstitutedVariables": {
+            const [folder, config, token] = rest as [unknown, unknown, unknown];
             return (
-              (await provider.resolveDebugConfigurationWithSubstitutedVariables?.(payload, undefined)) ?? null
+              (await provider.resolveDebugConfigurationWithSubstitutedVariables?.(folder, config, token)) ?? null
             );
+          }
           default:
             throw new Error(`unknown debug-cfg verb: ${verb}`);
         }
@@ -538,11 +575,16 @@ type TextDocumentContentProvider = {
 };
 
 type DebugConfigurationProvider = {
-  provideDebugConfigurations?(folder: unknown): unknown[] | Promise<unknown[]>;
-  resolveDebugConfiguration?(folder: unknown, config: unknown): unknown | Promise<unknown>;
+  provideDebugConfigurations?(folder: unknown, token?: unknown): unknown[] | Promise<unknown[]>;
+  resolveDebugConfiguration?(
+    folder: unknown,
+    config: unknown,
+    token?: unknown,
+  ): unknown | Promise<unknown>;
   resolveDebugConfigurationWithSubstitutedVariables?(
     folder: unknown,
     config: unknown,
+    token?: unknown,
   ): unknown | Promise<unknown>;
 };
 
