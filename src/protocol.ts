@@ -37,6 +37,7 @@ export const EXTENSION_ACTIVATE = "extension/activate";
 export const EXTENSION_DEACTIVATE = "extension/deactivate";
 
 export const VSCODE_BRIDGE = "vscode/bridge";
+export const VSCODE_EXTENSION_CALL = "vscode/extension-call";
 export const WEBVIEW_RPC = "webview/rpc";
 
 export type HostInitializeParams = {

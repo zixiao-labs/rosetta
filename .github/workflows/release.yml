@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify vendored vscode pin matches NOTICE
+        run: npm run verify
+      - name: Type-check
+        run: npm run type-check
+
+  bundle:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - runner: macos-13
+            platform: darwin
+            arch: amd64
+          - runner: macos-latest
+            platform: darwin
+            arch: arm64
+          - runner: windows-latest
+            platform: windows
+            arch: amd64
+          - runner: windows-11-arm
+            platform: windows
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Bundle
+        run: npm run bundle
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rosetta-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/rosetta-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+            release/rosetta-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/rosetta-*.tar.gz
+            release/rosetta-*.tar.gz.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
