@@ -5,6 +5,7 @@ import {
   HOST_READY,
   HOST_SHUTDOWN,
   VSCODE_BRIDGE,
+  VSCODE_EXTENSION_CALL,
   WEBVIEW_RPC,
   type ExtensionActivateParams,
   type Frame,
@@ -67,6 +68,10 @@ export class Dispatcher {
       case VSCODE_BRIDGE: {
         if (!this.bridge) throw new Error("host not initialized");
         return this.bridge.invoke(req.params);
+      }
+      case VSCODE_EXTENSION_CALL: {
+        if (!this.bridge) throw new Error("host not initialized");
+        return this.bridge.handleExtensionCall(req.params);
       }
       case WEBVIEW_RPC: {
         if (!this.webview) throw new Error("host not initialized");

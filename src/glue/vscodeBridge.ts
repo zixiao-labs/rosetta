@@ -23,7 +23,9 @@ export class VsCodeBridge {
   private readonly send: (frame: Frame) => void;
   private readonly enableLanguageServices: boolean;
   private nextId = 1000;
+  private nextCallbackId = 1;
   private readonly pending = new Map<number, { resolve(value: unknown): void; reject(err: Error): void }>();
+  private readonly callbacks = new Map<string, (args: unknown[]) => unknown | Promise<unknown>>();
   private extHostHandle: unknown = null;
 
   constructor(opts: VsCodeBridgeOptions) {
@@ -95,6 +97,32 @@ export class VsCodeBridge {
     });
   }
 
+  /**
+   * Register a callback that the host can invoke via `vscode/extension-call`.
+   * Returns the opaque callback id that should be handed to the host (e.g., as
+   * the `providerId` field of a registration call) and a disposer.
+   */
+  registerCallback(
+    prefix: string,
+    fn: (args: unknown[]) => unknown | Promise<unknown>,
+  ): { id: string; dispose(): void } {
+    const id = `${prefix}.${this.nextCallbackId++}`;
+    this.callbacks.set(id, fn);
+    return {
+      id,
+      dispose: () => {
+        this.callbacks.delete(id);
+      },
+    };
+  }
+
+  async handleExtensionCall(params: unknown): Promise<unknown> {
+    const { callbackId, args } = (params ?? {}) as { callbackId: string; args?: unknown[] };
+    const fn = this.callbacks.get(callbackId);
+    if (!fn) throw new Error(`unknown extension callback: ${callbackId}`);
+    return fn(args ?? []);
+  }
+
   isReady(): boolean {
     return (this.extHostHandle as { kind?: string } | null)?.kind === "ready";
   }
@@ -105,5 +133,6 @@ export class VsCodeBridge {
       slot.reject(new Error("Rosetta host shutting down"));
     }
     this.pending.clear();
+    this.callbacks.clear();
   }
 }
