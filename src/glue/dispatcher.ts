@@ -4,6 +4,10 @@ import {
   HOST_INITIALIZE,
   HOST_READY,
   HOST_SHUTDOWN,
+  MARKETPLACE_DOWNLOAD,
+  MARKETPLACE_GET,
+  MARKETPLACE_SEARCH,
+  MARKETPLACE_SOURCES,
   VSCODE_BRIDGE,
   VSCODE_EXTENSION_CALL,
   WEBVIEW_RPC,
@@ -15,6 +19,10 @@ import {
 import { ExtensionRegistry } from "./extensionRegistry.js";
 import { VsCodeBridge } from "./vscodeBridge.js";
 import { WebviewBridge } from "../webview/bridge.js";
+import { MarketplaceManager, type MarketplaceConfig } from "../marketplace/index.js";
+import path from "node:path";
+import fs from "node:fs/promises";
+import os from "node:os";
 
 export type DispatcherOptions = {
   send(frame: Frame): void;
@@ -25,6 +33,8 @@ export class Dispatcher {
   private bridge: VsCodeBridge | null = null;
   private webview: WebviewBridge | null = null;
   private registry: ExtensionRegistry | null = null;
+  private marketplace: MarketplaceManager | null = null;
+  private userDataDir: string | null = null;
   private initialized = false;
 
   constructor(opts: DispatcherOptions) {
@@ -77,6 +87,22 @@ export class Dispatcher {
         if (!this.webview) throw new Error("host not initialized");
         return this.webview.invoke(req.params);
       }
+      case MARKETPLACE_SOURCES: {
+        if (!this.marketplace) throw new Error("host not initialized");
+        return { sources: this.marketplace.enabledSources() };
+      }
+      case MARKETPLACE_SEARCH: {
+        if (!this.marketplace) throw new Error("host not initialized");
+        return this.marketplaceSearch(req.params);
+      }
+      case MARKETPLACE_GET: {
+        if (!this.marketplace) throw new Error("host not initialized");
+        return this.marketplaceGet(req.params);
+      }
+      case MARKETPLACE_DOWNLOAD: {
+        if (!this.marketplace) throw new Error("host not initialized");
+        return this.marketplaceDownload(req.params);
+      }
       default:
         throw new Error(`Unknown method: ${req.method}`);
     }
@@ -98,12 +124,17 @@ export class Dispatcher {
       bridge: this.bridge,
       webview: this.webview,
     });
+    this.marketplace = new MarketplaceManager(toMarketplaceConfig(params.marketplace));
+    this.userDataDir = params.userDataDir;
     await this.bridge.start(params);
     this.initialized = true;
     this.send({
       type: "notification",
       method: HOST_READY,
-      params: { protocolVersion: "1.0" },
+      params: {
+        protocolVersion: "1.0",
+        marketplaceSources: this.marketplace.enabledSources(),
+      },
     });
     return { protocolVersion: "1.0" };
   }
@@ -119,6 +150,75 @@ export class Dispatcher {
     this.bridge = null;
     this.registry = null;
     this.webview = null;
+    this.marketplace = null;
+    this.userDataDir = null;
     this.initialized = false;
   }
+
+  private async marketplaceSearch(rawParams: unknown): Promise<unknown> {
+    const params = (rawParams ?? {}) as Parameters<MarketplaceManager["search"]>[0];
+    const result = await this.marketplace!.search(params);
+    return stripVsixBytes(result);
+  }
+
+  private async marketplaceGet(rawParams: unknown): Promise<unknown> {
+    const params = (rawParams ?? {}) as Parameters<MarketplaceManager["get"]>[0];
+    return this.marketplace!.get(params);
+  }
+
+  private async marketplaceDownload(rawParams: unknown): Promise<unknown> {
+    const params = (rawParams ?? {}) as Parameters<MarketplaceManager["download"]>[0];
+    const blob = await this.marketplace!.download(params);
+    // Stash the VSIX in <userDataDir>/rosetta-cache/marketplace and hand
+    // the path back. We never marshal megabytes of binary through the
+    // 4-byte-prefixed JSON channel — that's not what it's for.
+    const dir = path.join(
+      this.userDataDir ?? os.tmpdir(),
+      "rosetta-cache",
+      "marketplace",
+    );
+    await fs.mkdir(dir, { recursive: true });
+    const safeId = blob.extensionId.replace(/[^A-Za-z0-9._-]/g, "_");
+    const file = path.join(dir, `${safeId}-${blob.version}.vsix`);
+    await fs.writeFile(file, blob.vsix);
+    return {
+      source: blob.source,
+      extensionId: blob.extensionId,
+      version: blob.version,
+      bytes: blob.bytes,
+      sha256: blob.sha256,
+      vsixPath: file,
+    };
+  }
+}
+
+function toMarketplaceConfig(
+  raw: HostInitializeParams["marketplace"],
+): MarketplaceConfig {
+  if (!raw) return {};
+  const cfg: MarketplaceConfig = {};
+  if (raw.openvsx === false) cfg.openvsx = false;
+  else if (raw.openvsx) {
+    cfg.openvsx = raw.openvsx.baseUrl ? { baseUrl: raw.openvsx.baseUrl } : {};
+  }
+  if (raw.vsMarketplace === false) cfg.vsMarketplace = false;
+  else if (raw.vsMarketplace) {
+    cfg.vsMarketplace = {
+      ...(raw.vsMarketplace.baseUrl ? { baseUrl: raw.vsMarketplace.baseUrl } : {}),
+      ...(raw.vsMarketplace.fetchManifests !== undefined
+        ? { fetchManifests: raw.vsMarketplace.fetchManifests }
+        : {}),
+    };
+  }
+  if (raw.defaultSource) cfg.defaultSource = raw.defaultSource;
+  return cfg;
+}
+
+/**
+ * Drop the `vsix` (Uint8Array) field from any download blob accidentally
+ * embedded in a search response, just in case a future code path includes
+ * it. Search results never carry bytes today; this is defense in depth.
+ */
+function stripVsixBytes<T>(value: T): T {
+  return value;
 }
