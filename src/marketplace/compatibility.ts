@@ -144,7 +144,13 @@ export const SUPPORTED_ACTIVATION_EVENTS: ReadonlySet<string> = new Set([
   "onWebviewPanel",
   "workspaceContains",
   "onFileSystem",
-  "onUri",
+  // "onUri" is intentionally excluded: per docs/API_GAPS.md the URI
+  // handler surface (`vscode.window.registerUriHandler`,
+  // `vscode.env.uriScheme`, `vscode.env.openExternal`) is not yet
+  // implemented, so OAuth/callback extensions cannot actually receive
+  // the event. Re-add this entry only when those APIs land in
+  // src/shims/vscode.ts and the corresponding row in API_GAPS.md flips
+  // from ❌ blocked to ✅.
 ]);
 
 /**
@@ -288,13 +294,20 @@ export function evaluateCompatibility(manifest: CompatibilityInput): Compatibili
 }
 
 /** Convenience: filter an array of search results down to runnable ones. */
-export function partitionByCompatibility<T extends { manifest: CompatibilityInput }>(
+export function partitionByCompatibility<
+  T extends { manifest: CompatibilityInput; compatibility?: CompatibilityReport },
+>(
   items: readonly T[],
 ): { runnable: Array<T & { compatibility: CompatibilityReport }>; rejected: Array<T & { compatibility: CompatibilityReport }> } {
   const runnable: Array<T & { compatibility: CompatibilityReport }> = [];
   const rejected: Array<T & { compatibility: CompatibilityReport }> = [];
   for (const item of items) {
-    const compatibility = evaluateCompatibility(item.manifest);
+    // An adapter that already knows the item is unsupported (e.g. an
+    // OpenVSX search hit whose details fetch failed) can pre-stamp a
+    // compatibility report. Honor it instead of re-evaluating against
+    // a possibly empty manifest, which would otherwise pass closed
+    // because there is nothing to flag.
+    const compatibility = item.compatibility ?? evaluateCompatibility(item.manifest);
     const decorated = { ...item, compatibility };
     if (compatibility.runnable) runnable.push(decorated);
     else rejected.push(decorated);

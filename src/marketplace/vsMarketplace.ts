@@ -141,12 +141,27 @@ export class VsMarketplaceClient implements GalleryClient {
     } else if (query.text) {
       criteria.push({ filterType: FILTER_SEARCH_TEXT, value: query.text });
     }
+    // The Microsoft extensionquery endpoint only supports page-based
+    // pagination (pageNumber/pageSize), but our abstract GalleryQuery
+    // contract permits an arbitrary `offset`. The previous
+    // `Math.floor(offset / limit) + 1` math only happened to be correct
+    // when the caller already aligned `offset` to a multiple of `limit`
+    // — `offset=30, limit=25` would request page 2 and silently return
+    // items 26-50 instead of 31-55. Fetch the page that contains
+    // `offset` and slice locally; the slice is at most `limit` items,
+    // which matches GalleryQuery's documentation that `limit` is a
+    // ceiling, not a floor.
+    const offset = Math.max(0, query.offset ?? 0);
+    const limit = Math.min(query.limit ?? 25, 100);
+    const pageSize = Math.max(1, Math.min(limit, 100));
+    const basePage = Math.floor(offset / pageSize) + 1;
+    const sliceStart = offset - (basePage - 1) * pageSize;
     const body = {
       filters: [
         {
           criteria,
-          pageNumber: Math.floor((query.offset ?? 0) / Math.max(query.limit ?? 25, 1)) + 1,
-          pageSize: Math.min(query.limit ?? 25, 100),
+          pageNumber: basePage,
+          pageSize,
           sortBy: SORT_BY[query.sortBy ?? "relevance"],
           sortOrder: 0,
         },
@@ -166,11 +181,15 @@ export class VsMarketplaceClient implements GalleryClient {
     });
 
     const result = data.results[0];
-    const extensions = result?.extensions ?? [];
+    const rawExtensions = result?.extensions ?? [];
+    // Apply the local slice for non-page-aligned offsets. When `offset`
+    // is page-aligned (the typical UI paging case) `sliceStart` is 0
+    // and this is a no-op.
+    const extensions = rawExtensions.slice(sliceStart, sliceStart + limit);
     const total =
       result?.resultMetadata
         ?.find((m) => m.metadataType === "ResultCount")
-        ?.metadataItems.find((it) => it.name === "TotalCount")?.count ?? extensions.length;
+        ?.metadataItems.find((it) => it.name === "TotalCount")?.count ?? rawExtensions.length;
 
     const items = await Promise.all(
       extensions.map(async (ext) => {
@@ -212,11 +231,16 @@ export class VsMarketplaceClient implements GalleryClient {
     const ext = await this.get(extensionId);
     if (!ext) throw new Error(`VS Marketplace: extension not found: ${extensionId}`);
     const targetVersion = version ?? ext.version;
-    // Build the canonical CDN URL. We do not use ext.assets.vsix
-    // verbatim because some VSIX assets in the gallery point at
-    // pre-signed URLs that expire; the canonical pattern is stable.
+    // Build the VSIX download URL from the configured `baseUrl` so
+    // internal mirrors / proxies are honored. The `vspackage` route is
+    // served from the same host as the extensionquery API (the older
+    // `{publisher}.gallery.vsassets.io/.../assetbyname/...` form is
+    // hardcoded to the public Microsoft CDN and silently bypasses
+    // `baseUrl`). We do not use `ext.assets.vsix` verbatim because
+    // some entries point at pre-signed URLs that expire; the
+    // baseUrl-relative pattern is stable per request.
     const [publisher, name] = splitId(extensionId);
-    const url = `https://${encodeURIComponent(publisher)}.gallery.vsassets.io/_apis/public/gallery/publisher/${encodeURIComponent(publisher)}/extension/${encodeURIComponent(name)}/${encodeURIComponent(targetVersion)}/assetbyname/${ASSET_VSIX}`;
+    const url = `${this.baseUrl}/_apis/public/gallery/publishers/${encodeURIComponent(publisher)}/vsextensions/${encodeURIComponent(name)}/${encodeURIComponent(targetVersion)}/vspackage`;
     const buf = await galleryFetchBuffer(url);
     const sha256 = createHash("sha256").update(buf).digest("hex");
     return { vsix: buf, bytes: buf.byteLength, sha256 };

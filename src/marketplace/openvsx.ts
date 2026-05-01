@@ -154,9 +154,20 @@ export class OpenVsxClient implements GalleryClient {
     const meta = await this.get(extensionId);
     if (!meta) throw new Error(`OpenVSX: extension not found: ${extensionId}`);
     const targetVersion = version ?? meta.version;
-    const downloadUrl = meta.assets.vsix.replace(`/${meta.version}/`, `/${targetVersion}/`);
-    const fallback = `${this.baseUrl}/api/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/${encodeURIComponent(targetVersion)}/file/${encodeURIComponent(`${namespace}.${name}-${targetVersion}.vsix`)}`;
-    const url = downloadUrl || fallback;
+    // When the caller pins a specific version we must not reuse
+    // `meta.assets.vsix`: that URL points at `meta.version` (the latest)
+    // and a naive `.replace("/<latest>/", "/<target>/")` is brittle —
+    // the OpenVSX `files["download"]` value occasionally lacks the
+    // version segment, leaving the substitution as a no-op and
+    // silently downloading the wrong VSIX. Construct the pinned URL
+    // directly from the documented OpenVSX route, falling back to the
+    // gallery-supplied URL only when we are downloading the latest
+    // version anyway.
+    const pinned = `${this.baseUrl}/api/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/${encodeURIComponent(targetVersion)}/file/${encodeURIComponent(`${namespace}.${name}-${targetVersion}.vsix`)}`;
+    const url =
+      version !== undefined && version !== meta.version
+        ? pinned
+        : meta.assets.vsix || pinned;
     const buf = await galleryFetchBuffer(url);
     const sha256 = createHash("sha256").update(buf).digest("hex");
     return { vsix: buf, bytes: buf.byteLength, sha256 };
@@ -209,9 +220,14 @@ export class OpenVsxClient implements GalleryClient {
   private fromSearchHit(hit: OpenVsxSearchHit, err: unknown): GalleryExtension {
     // We could not fetch the per-extension info (rate limit, transient
     // 5xx). Build a minimal record so the UI can render the row with
-    // an "info unavailable" badge. Compatibility evaluation will fail
-    // closed because we have no contributes/activationEvents to vet.
+    // an "info unavailable" badge. The empty manifest below would
+    // otherwise pass `evaluateCompatibility` (no contributes /
+    // activationEvents → nothing to flag → runnable=true), which is
+    // the opposite of fail-closed. Stamp an explicit compatibility
+    // verdict so partitionByCompatibility drops the row into the
+    // rejected set.
     const id = `${hit.namespace}.${hit.name}`;
+    const fetchReason = err instanceof Error ? err.message : String(err);
     return {
       source: this.source,
       extensionId: id,
@@ -237,7 +253,16 @@ export class OpenVsxClient implements GalleryClient {
         ...(hit.files?.["readme"] ? { readme: hit.files["readme"] } : {}),
         ...(hit.files?.["icon"] ? { icon: hit.files["icon"] } : {}),
       },
-      raw: { hit, fetchError: err instanceof Error ? err.message : String(err) },
+      raw: { hit, fetchError: fetchReason },
+      compatibility: {
+        runnable: false,
+        reason: `OpenVSX details unavailable for ${id}: ${fetchReason}`,
+        unsupportedContributions: [],
+        unsupportedActivationEvents: [],
+        notes: [
+          `details fetch failed (${fetchReason}); manifest contents unknown — failing closed`,
+        ],
+      },
     };
   }
 }

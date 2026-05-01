@@ -82,9 +82,25 @@ export class MarketplaceManager {
     if (merged.vsMarketplace !== false) {
       this.clients.set("vs-marketplace", new VsMarketplaceClient(merged.vsMarketplace));
     }
-    this.defaultSource = merged.defaultSource;
     if (this.clients.size === 0) {
       throw new Error("MarketplaceManager: at least one gallery must be enabled");
+    }
+    // The configured defaultSource may point at a gallery the deployment
+    // disabled (the DEFAULT_CONFIG keeps "openvsx" even when the caller
+    // sets `openvsx: false`). Falling through with that ghost default
+    // would surface as a confusing "gallery source not enabled" the
+    // first time the workbench called download(); validate at
+    // construction time so the misconfiguration is caught immediately.
+    if (this.clients.has(merged.defaultSource)) {
+      this.defaultSource = merged.defaultSource;
+    } else {
+      const firstEnabled = this.clients.keys().next().value as GallerySource | undefined;
+      if (!firstEnabled) {
+        throw new Error(
+          `MarketplaceManager: defaultSource=${merged.defaultSource} is not enabled and no fallback gallery is available`,
+        );
+      }
+      this.defaultSource = firstEnabled;
     }
   }
 
@@ -132,11 +148,19 @@ export class MarketplaceManager {
     // galleries. Prefer OpenVSX because that's our default trust path.
     const dedupRunnable = dedupePreferring(allRunnable, ["openvsx", "vs-marketplace"]);
     const dedupRejected = dedupePreferring(allRejected, ["openvsx", "vs-marketplace"]);
+    // The two arrays are deduplicated independently, so an extension
+    // that runs on OpenVSX but not on VS Marketplace (or vice versa)
+    // can still appear in both `items` and `rejected`. Drop any
+    // rejected entries that already have a runnable counterpart so
+    // the workbench's "incompatible" tab only lists extensions with
+    // no runnable hit anywhere.
+    const runnableIds = new Set(dedupRunnable.map((item) => item.extensionId));
+    const rejectedFiltered = dedupRejected.filter((item) => !runnableIds.has(item.extensionId));
 
     return {
       bySource: bySource as Record<GallerySource, GallerySearchResult>,
       items: dedupRunnable,
-      rejected: dedupRejected,
+      rejected: rejectedFiltered,
       total,
     };
   }

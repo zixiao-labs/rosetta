@@ -83,6 +83,14 @@ export type GalleryExtension = {
   assets: GalleryAsset;
   /** Provenance blob from the gallery, untouched. */
   raw: unknown;
+  /**
+   * Optional pre-computed compatibility verdict. Adapters use this to
+   * fail closed when they cannot vouch for the manifest (e.g. the
+   * details fetch failed and only a search-hit stub is available).
+   * When unset, {@link partitionByCompatibility} runs
+   * {@link evaluateCompatibility} against `manifest`.
+   */
+  compatibility?: CompatibilityReport;
 };
 
 export type GalleryExtensionWithCompat = GalleryExtension & {
@@ -137,6 +145,16 @@ export class GalleryHttpError extends Error {
 
 const USER_AGENT = "Rosetta/1.x (+https://github.com/zixiao-labs/rosetta)";
 
+/**
+ * Hard deadline applied to every gallery request. The public OpenVSX and
+ * Microsoft Marketplace endpoints normally answer in under a second; a
+ * minute is generous enough to absorb a slow VSIX download on a poor
+ * connection while still preventing a stalled TCP connection from
+ * hanging the workbench's "Browse extensions" pane indefinitely. The
+ * dispatcher relays the abort as a -32000 error.
+ */
+const GALLERY_FETCH_TIMEOUT_MS = 60_000;
+
 export async function galleryFetch(url: string, opts: FetchOptions = {}): Promise<Response> {
   const headers: Record<string, string> = {
     "user-agent": USER_AGENT,
@@ -153,17 +171,40 @@ export async function galleryFetch(url: string, opts: FetchOptions = {}): Promis
     // `@types/node` without `lib.dom`.
     (init as { body?: unknown }).body = opts.body;
   }
-  if (opts.signal) init.signal = opts.signal;
 
-  const res = await fetch(url, init);
-  if (!res.ok && opts.throwOnHttpError !== false) {
-    throw new GalleryHttpError(
-      `${opts.method ?? "GET"} ${url} → ${res.status} ${res.statusText}`,
-      res.status,
-      url,
-    );
+  // Combine our internal deadline with any caller-supplied AbortSignal so
+  // either side can short-circuit the request. The timer must be cleared
+  // in both the success and error paths to avoid leaking a Node timer
+  // (each held timer keeps the event loop alive).
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), GALLERY_FETCH_TIMEOUT_MS);
+  let upstreamAbortHandler: (() => void) | undefined;
+  if (opts.signal) {
+    if (opts.signal.aborted) {
+      controller.abort();
+    } else {
+      upstreamAbortHandler = () => controller.abort();
+      opts.signal.addEventListener("abort", upstreamAbortHandler, { once: true });
+    }
   }
-  return res;
+  init.signal = controller.signal;
+
+  try {
+    const res = await fetch(url, init);
+    if (!res.ok && opts.throwOnHttpError !== false) {
+      throw new GalleryHttpError(
+        `${opts.method ?? "GET"} ${url} → ${res.status} ${res.statusText}`,
+        res.status,
+        url,
+      );
+    }
+    return res;
+  } finally {
+    clearTimeout(timeoutId);
+    if (upstreamAbortHandler && opts.signal) {
+      opts.signal.removeEventListener("abort", upstreamAbortHandler);
+    }
+  }
 }
 
 export async function galleryFetchJson<T>(url: string, opts: FetchOptions = {}): Promise<T> {

@@ -23,6 +23,7 @@ import { MarketplaceManager, type MarketplaceConfig } from "../marketplace/index
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
+import { createHash, randomBytes } from "node:crypto";
 
 export type DispatcherOptions = {
   send(frame: Frame): void;
@@ -180,7 +181,36 @@ export class Dispatcher {
     await fs.mkdir(dir, { recursive: true });
     const safeId = blob.extensionId.replace(/[^A-Za-z0-9._-]/g, "_");
     const file = path.join(dir, `${safeId}-${blob.version}.vsix`);
-    await fs.writeFile(file, blob.vsix);
+    // The VSIX cache is shared across concurrent download() calls (the
+    // workbench may install the same extension on multiple windows at
+    // once). Writing directly to `file` would race: a reader could
+    // observe a partial write, or two writers could interleave bytes.
+    // Stage the bytes in a unique temp file in the same directory and
+    // rename atomically. If a previous run already produced a verified
+    // copy at the final path, reuse it instead of overwriting.
+    let needsWrite = true;
+    try {
+      const existing = await fs.stat(file);
+      if (existing.size === blob.bytes) {
+        const onDisk = await fs.readFile(file);
+        const onDiskHash = createHash("sha256").update(onDisk).digest("hex");
+        if (onDiskHash === blob.sha256) {
+          needsWrite = false;
+        }
+      }
+    } catch {
+      // ENOENT or other read error — fall through and write fresh.
+    }
+    if (needsWrite) {
+      const tmpFile = `${file}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+      try {
+        await fs.writeFile(tmpFile, blob.vsix);
+        await fs.rename(tmpFile, file);
+      } catch (err) {
+        await fs.unlink(tmpFile).catch(() => {});
+        throw err;
+      }
+    }
     return {
       source: blob.source,
       extensionId: blob.extensionId,
