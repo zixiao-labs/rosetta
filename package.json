@@ -1,6 +1,6 @@
 {
   "name": "@zixiao-labs/rosetta",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "VS Code extension-host compatibility layer for Logos Editor Workstation Edition.",
   "license": "MIT",
   "author": "Zixiao Laboratory",
