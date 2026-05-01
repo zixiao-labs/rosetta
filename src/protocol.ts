@@ -40,6 +40,25 @@ export const VSCODE_BRIDGE = "vscode/bridge";
 export const VSCODE_EXTENSION_CALL = "vscode/extension-call";
 export const WEBVIEW_RPC = "webview/rpc";
 
+/**
+ * Marketplace gallery methods. Logos drives every gallery interaction
+ * through Rosetta so the workbench process never has to learn the
+ * OpenVSX / VS Marketplace wire formats. See `src/marketplace/`.
+ *
+ *   marketplace/search    → AggregatedSearchResult (without VSIX bytes)
+ *   marketplace/get       → GalleryExtension | null
+ *   marketplace/download  → { source, extensionId, version, bytes, sha256, vsixPath }
+ *   marketplace/sources   → GallerySource[]
+ *
+ * Downloads do not return raw bytes over the JSON-RPC channel: the
+ * dispatcher writes the VSIX to a temp path under the configured
+ * userDataDir and returns the path so the workbench can move/install.
+ */
+export const MARKETPLACE_SEARCH = "marketplace/search";
+export const MARKETPLACE_GET = "marketplace/get";
+export const MARKETPLACE_DOWNLOAD = "marketplace/download";
+export const MARKETPLACE_SOURCES = "marketplace/sources";
+
 export type HostInitializeParams = {
   protocolVersion: "1.0";
   workspace: string;
@@ -47,6 +66,16 @@ export type HostInitializeParams = {
   clientVersion: string;
   vendorRoot: string;
   enableLanguageServices: boolean;
+  /**
+   * Optional gallery configuration. If omitted, both OpenVSX and the
+   * Microsoft VS Marketplace are enabled with their defaults; pass
+   * `false` to disable a source (e.g. air-gapped enterprise installs).
+   */
+  marketplace?: {
+    openvsx?: false | { baseUrl?: string };
+    vsMarketplace?: false | { baseUrl?: string; fetchManifests?: boolean };
+    defaultSource?: "openvsx" | "vs-marketplace";
+  };
 };
 
 export type ExtensionActivateParams = {

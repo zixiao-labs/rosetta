@@ -104,9 +104,43 @@ behavior depends on what the host workbench implements:
 The following are **explicitly out of scope** and will throw a structured
 "unsupported" error:
 
-- Marketplace gallery & built-in extension management (Logos has its own pipeline)
 - Signed extension verification with Microsoft's keys
 - LiveShare and Settings Sync
+
+A running ledger of the `vscode.*` surface still pending implementation
+lives in [`docs/API_GAPS.md`](./docs/API_GAPS.md). The marketplace
+filter (below) reads from the same allowlist that backs that document,
+so adding a method to the shim automatically relaxes the gallery
+filter for any extension that needed it.
+
+## Marketplace gallery
+
+Rosetta ships with first-class clients for both
+[**OpenVSX**](https://open.vsx.org) (default, MIT-licensed) and the
+**Microsoft VS Marketplace**. Logos drives them through the
+JSON-RPC channel:
+
+```text
+marketplace/sources       → { sources: ["openvsx", "vs-marketplace"] }
+marketplace/search        → AggregatedSearchResult     (no VSIX bytes)
+marketplace/get           → GalleryExtension | null
+marketplace/download      → { source, extensionId, version, bytes,
+                              sha256, vsixPath }
+```
+
+`marketplace/search` runs every result through
+`evaluateCompatibility(manifest)` — defined in
+`src/marketplace/compatibility.ts` — and only returns extensions whose
+`activationEvents` and `contributes.*` keys map onto APIs the shim
+already implements. Pass `includeIncompatible: true` to also receive
+the rejected list (with a `compatibility.reason` for each), e.g. to
+populate a "won't run yet" tab. Downloads land in
+`<userDataDir>/rosetta-cache/marketplace/`; Logos moves them into the
+extensions tree after its own ad/telemetry/privacy inspection pass.
+
+To opt out of a gallery (air-gapped enterprise, ToS-sensitive
+deployments) pass `marketplace.openvsx: false` or
+`marketplace.vsMarketplace: false` to `host/initialize`.
 
 ## Marketplace inspection
 
