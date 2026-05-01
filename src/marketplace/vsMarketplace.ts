@@ -31,6 +31,7 @@ import { createHash } from "node:crypto";
 import {
   galleryFetchBuffer,
   galleryFetchJson,
+  splitId,
   type GalleryClient,
   type GalleryExtension,
   type GalleryQuery,
@@ -202,10 +203,28 @@ export class VsMarketplaceClient implements GalleryClient {
             headers: { accept: "application/json" },
           });
           return mergeManifest(base, manifestJson);
-        } catch {
+        } catch (err) {
           // Manifest fetch failures are non-fatal — the search row still
           // renders, but compatibility evaluation must fail closed.
-          return base;
+          // Without a stamped verdict, evaluateCompatibility() runs against
+          // the empty manifest above and returns runnable=true (no
+          // contributes / activationEvents → nothing to flag), which is
+          // the opposite of fail-closed. Mirror OpenVSX.fromSearchHit by
+          // pre-stamping the compatibility report so partitionByCompatibility
+          // drops the row into the rejected set.
+          const fetchReason = err instanceof Error ? err.message : String(err);
+          return {
+            ...base,
+            compatibility: {
+              runnable: false,
+              reason: `VS Marketplace manifest unavailable for ${base.extensionId}: ${fetchReason}`,
+              unsupportedContributions: [],
+              unsupportedActivationEvents: [],
+              notes: [
+                `manifest fetch failed (${fetchReason}); contributes/activationEvents unknown — failing closed`,
+              ],
+            },
+          };
         }
       }),
     );
@@ -332,14 +351,6 @@ function mergeManifest(base: GalleryExtension, parsed: Record<string, unknown>):
       ...(extensionDependencies ? { extensionDependencies } : {}),
     },
   };
-}
-
-function splitId(extensionId: string): [string, string] {
-  const dot = extensionId.indexOf(".");
-  if (dot <= 0 || dot === extensionId.length - 1) {
-    throw new Error(`invalid extensionId: ${extensionId} (expected <publisher>.<name>)`);
-  }
-  return [extensionId.slice(0, dot), extensionId.slice(dot + 1)];
 }
 
 function isStringArray(v: unknown): v is string[] {

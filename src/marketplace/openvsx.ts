@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import {
   galleryFetchBuffer,
   galleryFetchJson,
+  splitId,
   type GalleryClient,
   type GalleryExtension,
   type GalleryQuery,
@@ -265,14 +266,6 @@ export class OpenVsxClient implements GalleryClient {
       },
     };
   }
-}
-
-function splitId(extensionId: string): [string, string] {
-  const dot = extensionId.indexOf(".");
-  if (dot <= 0 || dot === extensionId.length - 1) {
-    throw new Error(`invalid extensionId: ${extensionId} (expected <publisher>.<name>)`);
-  }
-  return [extensionId.slice(0, dot), extensionId.slice(dot + 1)];
 }
 
 function isNotFound(err: unknown): boolean {

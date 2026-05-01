@@ -217,3 +217,15 @@ export async function galleryFetchBuffer(url: string, opts: FetchOptions = {}): 
   const arr = new Uint8Array(await res.arrayBuffer());
   return arr;
 }
+
+/**
+ * Split a `<publisher>.<name>` extension id. Both gallery adapters parse
+ * this the same way; the helper lives here so the two copies cannot drift.
+ */
+export function splitId(extensionId: string): [string, string] {
+  const dot = extensionId.indexOf(".");
+  if (dot <= 0 || dot === extensionId.length - 1) {
+    throw new Error(`invalid extensionId: ${extensionId} (expected <publisher>.<name>)`);
+  }
+  return [extensionId.slice(0, dot), extensionId.slice(dot + 1)];
+}

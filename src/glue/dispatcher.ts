@@ -248,7 +248,34 @@ function toMarketplaceConfig(
  * Drop the `vsix` (Uint8Array) field from any download blob accidentally
  * embedded in a search response, just in case a future code path includes
  * it. Search results never carry bytes today; this is defense in depth.
+ *
+ * The function returns a deep copy that omits any property whose value is
+ * a typed-array view or raw `ArrayBuffer`. The legitimate `assets.vsix`
+ * URL is a string and is preserved. Non-plain objects (Date, Map, etc.)
+ * are kept by reference because the marketplace pipeline only produces
+ * JSON-shaped results — walking past those would risk mangling shapes the
+ * caller still expects to receive.
  */
 function stripVsixBytes<T>(value: T): T {
-  return value;
+  return scrubBytes(value) as T;
+}
+
+function isBytes(value: unknown): boolean {
+  return ArrayBuffer.isView(value) || value instanceof ArrayBuffer;
+}
+
+function scrubBytes(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (isBytes(value)) return undefined;
+  if (Array.isArray(value)) {
+    return value.filter((v) => !isBytes(v)).map(scrubBytes);
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (isBytes(v)) continue;
+    out[k] = scrubBytes(v);
+  }
+  return out;
 }
